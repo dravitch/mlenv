@@ -1,0 +1,403 @@
+---
+# Playbook pour configurer l'environnement dans la VM de machine learning
+# Partie du projet MLENV
+
+# Variables locales
+- name: Définir les variables locales
+  set_fact:
+    user_home: "/home/{{ vm_user }}"
+    venv_path: "/home/{{ vm_user }}/venv"
+
+# 1. Mise à jour du système
+- name: Mise à jour du système
+  block:
+    - name: Mise à jour de la liste des paquets
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Mise à niveau du système
+      apt:
+        upgrade: yes
+        autoremove: yes
+        autoclean: yes
+      register: system_updated
+
+# 2. Installation des paquets de base
+- name: Installation des paquets de base
+  apt:
+    name:
+      - build-essential
+      - gcc
+      - g++
+      - make
+      - cmake
+      - unzip
+      - git
+      - curl
+      - wget
+      - htop
+      - nano
+      - screen
+      - tmux
+      - software-properties-common
+      - python3-pip
+      - python3-dev
+      - python3-venv
+    state: present
+
+# 3. Installation des pilotes NVIDIA
+- name: Installation des pilotes NVIDIA
+  block:
+    - name: Ajouter le dépôt des pilotes graphiques
+      apt_repository:
+        repo: ppa:graphics-drivers/ppa
+        state: present
+      when: ansible_distribution == 'Ubuntu'
+      register: graphics_repo_added
+
+    - name: Mettre à jour la liste des paquets
+      apt:
+        update_cache: yes
+      when: graphics_repo_added.changed
+
+    - name: Blacklister le pilote Nouveau
+      copy:
+        dest: /etc/modprobe.d/blacklist-nouveau.conf
+        content: |
+          blacklist nouveau
+          options nouveau modeset=0
+        mode: '0644'
+      register: nouveau_blacklisted
+
+    - name: Mettre à jour l'initramfs après blacklist de Nouveau
+      command: update-initramfs -u
+      when: nouveau_blacklisted.changed
+
+    - name: Installation du pilote NVIDIA
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - nvidia-driver-535  # Ajuster selon la version compatible
+        - nvidia-utils-535
+      register: nvidia_installed
+
+    - name: Installation de CUDA
+      block:
+        - name: Télécharger le keyring CUDA
+          get_url:
+            url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+            dest: /tmp/cuda-keyring_1.1-1_all.deb
+            mode: '0644'
+
+        - name: Installer le keyring CUDA
+          apt:
+            deb: /tmp/cuda-keyring_1.1-1_all.deb
+            state: present
+
+        - name: Mettre à jour la liste des paquets pour CUDA
+          apt:
+            update_cache: yes
+
+        - name: Installer le toolkit CUDA
+          apt:
+            name: cuda-toolkit-12-3
+            state: present
+          register: cuda_installed
+
+    - name: Installation de cuDNN
+      apt:
+        name:
+          - libcudnn8
+          - libcudnn8-dev
+        state: present
+      ignore_errors: yes  # Peut échouer si le package n'est pas disponible dans les dépôts standard
+
+# 4. Création de l'utilisateur ML
+- name: Configuration de l'utilisateur pour le machine learning
+  block:
+    - name: Vérifier si l'utilisateur existe déjà
+      getent:
+        database: passwd
+        key: "{{ vm_user }}"
+      register: user_exists
+
+    - name: Créer l'utilisateur
+      user:
+        name: "{{ vm_user }}"
+        shell: /bin/bash
+        createhome: yes
+        groups: sudo
+        append: yes
+      when: vm_user not in user_exists.ansible_facts.getent_passwd
+
+    - name: Définir le mot de passe de l'utilisateur
+      user:
+        name: "{{ vm_user }}"
+        password: "{{ default_password | password_hash('sha512') }}"
+      when: vm_user not in user_exists.ansible_facts.getent_passwd
+
+# 5. Configuration de l'environnement Python
+- name: Configuration de l'environnement Python
+  block:
+    - name: Créer l'environnement virtuel Python
+      become: yes
+      become_user: "{{ vm_user }}"
+      command: python3 -m venv {{ venv_path }}
+      args:
+        creates: "{{ venv_path }}"
+
+    - name: Copier le fichier requirements-ml.txt
+      copy:
+        src: ../config/python/requirements-ml.txt
+        dest: "{{ user_home }}/requirements-ml.txt"
+        owner: "{{ vm_user }}"
+        group: "{{ vm_user }}"
+        mode: '0644'
+
+    - name: Installer les packages Python pour le machine learning
+      become: yes
+      become_user: "{{ vm_user }}"
+      pip:
+        requirements: "{{ user_home }}/requirements-ml.txt"
+        virtualenv: "{{ venv_path }}"
+      register: pip_installed
+      ignore_errors: yes  # Certains packages peuvent échouer en raison de dépendances complexes
+
+    # Installation manuelle des packages qui pourraient avoir échoué
+    - name: Installer les packages base
+      become: yes
+      become_user: "{{ vm_user }}"
+      pip:
+        name:
+          - numpy
+          - pandas
+          - scipy
+          - matplotlib
+          - seaborn
+          - scikit-learn
+          - jupyterlab
+        virtualenv: "{{ venv_path }}"
+      when: pip_installed is failed
+
+    - name: Installer TensorFlow
+      become: yes
+      become_user: "{{ vm_user }}"
+      pip:
+        name:
+          - tensorflow
+          - tensorflow-gpu
+        virtualenv: "{{ venv_path }}"
+      ignore_errors: yes
+
+    - name: Installer PyTorch
+      become: yes
+      become_user: "{{ vm_user }}"
+      pip:
+        name:
+          - torch
+          - torchvision
+          - torchaudio
+        virtualenv: "{{ venv_path }}"
+      ignore_errors: yes
+
+# 6. Configuration de Jupyter
+- name: Configuration de Jupyter
+  block:
+    - name: Créer le répertoire de configuration Jupyter
+      file:
+        path: /etc/jupyter
+        state: directory
+        mode: '0755'
+
+    - name: Générer la configuration Jupyter
+      become: yes
+      become_user: "{{ vm_user }}"
+      command: "{{ venv_path }}/bin/jupyter notebook --generate-config"
+      args:
+        creates: "{{ user_home }}/.jupyter/jupyter_notebook_config.py"
+
+    - name: Configurer Jupyter pour accès à distance
+      copy:
+        dest: /etc/jupyter/jupyter_notebook_config.py
+        content: |
+          c.NotebookApp.ip = '0.0.0.0'
+          c.NotebookApp.port = {{ jupyter_port | default(8888) }}
+          c.NotebookApp.open_browser = False
+          c.NotebookApp.allow_root = True
+          c.NotebookApp.password = '{{ jupyter_password_hash | default("") }}'
+        mode: '0644'
+
+    - name: Créer le service systemd pour Jupyter
+      template:
+        src: ../templates/jupyter.service.j2
+        dest: /etc/systemd/system/jupyter.service
+        mode: '0644'
+      vars:
+        user_name: "{{ vm_user }}"
+
+    - name: Activer et démarrer le service Jupyter
+      systemd:
+        name: jupyter
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+# 7. Configuration du pare-feu
+- name: Configuration du pare-feu
+  block:
+    - name: Installer UFW
+      apt:
+        name: ufw
+        state: present
+
+    - name: Autoriser SSH
+      ufw:
+        rule: allow
+        name: OpenSSH
+
+    - name: Autoriser le port Jupyter
+      ufw:
+        rule: allow
+        port: "{{ jupyter_port | default(8888) }}"
+        proto: tcp
+
+    - name: Autoriser le port API (TensorFlow Serving)
+      ufw:
+        rule: allow
+        port: 8501
+        proto: tcp
+
+    - name: Activer UFW
+      ufw:
+        state: enabled
+        policy: deny
+
+# 8. Création de la structure de projet
+- name: Création de la structure de projet
+  become: yes
+  become_user: "{{ vm_user }}"
+  file:
+    path: "{{ user_home }}/projects/{{ item }}"
+    state: directory
+    mode: '0755'
+  with_items:
+    - data
+    - models
+    - results
+    - agents
+    - api
+
+# 9. Création d'un script de test GPU
+- name: Création d'un script de test GPU
+  become: yes
+  become_user: "{{ vm_user }}"
+  copy:
+    dest: "{{ user_home }}/projects/test_gpu.py"
+    content: |
+      #!/usr/bin/env python3
+      """
+      Script de test pour vérifier l'utilisation des GPUs
+      """
+      import tensorflow as tf
+      import torch
+      import time
+      import os
+      import sys
+
+      def test_tensorflow():
+          print("======= Test TensorFlow =======")
+          print(f"TensorFlow version: {tf.__version__}")
+          print(f"Num GPUs Available: {len(tf.config.list_physical_devices('GPU'))}")
+          
+          gpus = tf.config.list_physical_devices('GPU')
+          if gpus:
+              for gpu in gpus:
+                  print(f"GPU found: {gpu}")
+              
+              # Création d'un simple modèle pour tester la disponibilité des GPUs
+              print("Exécution d'un test de performance sur GPU...")
+              
+              # Créer des données de test
+              x = tf.random.normal([5000, 5000])
+              
+              # Mesurer le temps pour une opération matricielle
+              start_time = time.time()
+              result = tf.matmul(x, x)
+              elapsed_time = time.time() - start_time
+              
+              print(f"Multiplication matricielle sur GPU terminée en {elapsed_time:.2f} secondes")
+          else:
+              print("Aucun GPU trouvé pour TensorFlow!")
+
+      def test_pytorch():
+          print("\n======= Test PyTorch =======")
+          print(f"PyTorch version: {torch.__version__}")
+          print(f"CUDA available: {torch.cuda.is_available()}")
+          
+          if torch.cuda.is_available():
+              num_gpus = torch.cuda.device_count()
+              print(f"Nombre de GPUs disponibles: {num_gpus}")
+              
+              for i in range(num_gpus):
+                  print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+              
+              # Test de performance
+              print("Exécution d'un test de performance sur GPU...")
+              
+              # Création de tenseurs aléatoires sur GPU
+              x = torch.randn(5000, 5000, device="cuda")
+              y = torch.randn(5000, 5000, device="cuda")
+              
+              # Mesurer le temps pour une opération matricielle
+              start_time = time.time()
+              result = torch.matmul(x, y)
+              # Synchronisation pour assurer que le calcul est terminé
+              torch.cuda.synchronize()
+              elapsed_time = time.time() - start_time
+              
+              print(f"Multiplication matricielle sur GPU terminée en {elapsed_time:.2f} secondes")
+          else:
+              print("Aucun GPU trouvé pour PyTorch!")
+
+      if __name__ == "__main__":
+          print("Test de détection et performance des GPUs...")
+          
+          try:
+              test_tensorflow()
+          except Exception as e:
+              print(f"Erreur lors du test TensorFlow: {e}")
+          
+          try:
+              test_pytorch()
+          except Exception as e:
+              print(f"Erreur lors du test PyTorch: {e}")
+          
+          print("\nTest terminé!")
+    mode: '0755'
+
+# 10. Vérification des GPUs dans la VM
+- name: Vérification des GPUs
+  block:
+    - name: Vérifier si NVIDIA est installé
+      command: nvidia-smi
+      register: nvidia_smi_result
+      changed_when: false
+      failed_when: false
+
+    - name: Afficher l'état des GPUs
+      debug:
+        msg:
+          - "Détection des GPUs:"
+          - "{{ nvidia_smi_result.stdout if nvidia_smi_result.rc == 0 else 'Aucun GPU NVIDIA détecté ou pilotes non installés correctement' }}"
+
+# 11. Message final
+- name: Message final
+  debug:
+    msg:
+      - "Configuration de l'environnement de machine learning terminée!"
+      - "Accédez à Jupyter Lab sur http://{{ ansible_host }}:{{ jupyter_port | default(8888) }}"
+      - "Utilisateur: {{ vm_user }}"
+      - "Testez les GPUs avec le script: python3 ~/projects/test_gpu.py"
+      - "Nombre de GPUs attribués: {{ ml_gpu_indices | length }}"

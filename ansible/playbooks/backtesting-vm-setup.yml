@@ -1,0 +1,353 @@
+---
+# Playbook pour configurer l'environnement dans la VM de backtesting
+# Partie du projet MLENV
+
+# Variables locales
+- name: Définir les variables locales
+  set_fact:
+    user_home: "/home/{{ vm_user }}"
+    venv_path: "/home/{{ vm_user }}/venv"
+
+# 1. Mise à jour du système
+- name: Mise à jour du système
+  block:
+    - name: Mise à jour de la liste des paquets
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Mise à niveau du système
+      apt:
+        upgrade: yes
+        autoremove: yes
+        autoclean: yes
+      register: system_updated
+
+# 2. Installation des paquets de base
+- name: Installation des paquets de base
+  apt:
+    name:
+      - build-essential
+      - gcc
+      - g++
+      - make
+      - cmake
+      - unzip
+      - git
+      - curl
+      - wget
+      - htop
+      - nano
+      - screen
+      - tmux
+      - software-properties-common
+      - python3-pip
+      - python3-dev
+      - python3-venv
+    state: present
+
+# 3. Installation des pilotes NVIDIA
+- name: Installation des pilotes NVIDIA
+  block:
+    - name: Ajouter le dépôt des pilotes graphiques
+      apt_repository:
+        repo: ppa:graphics-drivers/ppa
+        state: present
+      when: ansible_distribution == 'Ubuntu'
+      register: graphics_repo_added
+
+    - name: Mettre à jour la liste des paquets
+      apt:
+        update_cache: yes
+      when: graphics_repo_added.changed
+
+    - name: Blacklister le pilote Nouveau
+      copy:
+        dest: /etc/modprobe.d/blacklist-nouveau.conf
+        content: |
+          blacklist nouveau
+          options nouveau modeset=0
+        mode: '0644'
+      register: nouveau_blacklisted
+
+    - name: Mettre à jour l'initramfs après blacklist de Nouveau
+      command: update-initramfs -u
+      when: nouveau_blacklisted.changed
+
+    - name: Installation du pilote NVIDIA
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - nvidia-driver-535  # Ajuster selon la version compatible
+        - nvidia-utils-535
+      register: nvidia_installed
+
+    - name: Installation de CUDA
+      block:
+        - name: Télécharger le keyring CUDA
+          get_url:
+            url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+            dest: /tmp/cuda-keyring_1.1-1_all.deb
+            mode: '0644'
+
+        - name: Installer le keyring CUDA
+          apt:
+            deb: /tmp/cuda-keyring_1.1-1_all.deb
+            state: present
+
+        - name: Mettre à jour la liste des paquets pour CUDA
+          apt:
+            update_cache: yes
+
+        - name: Installer le toolkit CUDA
+          apt:
+            name: cuda-toolkit-12-3
+            state: present
+          register: cuda_installed
+
+# 4. Création de l'utilisateur backtester
+- name: Configuration de l'utilisateur pour le backtesting
+  block:
+    - name: Vérifier si l'utilisateur existe déjà
+      getent:
+        database: passwd
+        key: "{{ vm_user }}"
+      register: user_exists
+
+    - name: Créer l'utilisateur
+      user:
+        name: "{{ vm_user }}"
+        shell: /bin/bash
+        createhome: yes
+        groups: sudo
+        append: yes
+      when: vm_user not in user_exists.ansible_facts.getent_passwd
+
+    - name: Définir le mot de passe de l'utilisateur
+      user:
+        name: "{{ vm_user }}"
+        password: "{{ default_password | password_hash('sha512') }}"
+      when: vm_user not in user_exists.ansible_facts.getent_passwd
+
+# 5. Configuration de l'environnement Python
+- name: Configuration de l'environnement Python
+  block:
+    - name: Créer l'environnement virtuel Python
+      become: yes
+      become_user: "{{ vm_user }}"
+      command: python3 -m venv {{ venv_path }}
+      args:
+        creates: "{{ venv_path }}"
+
+    - name: Copier le fichier requirements-backtesting.txt
+      copy:
+        src: ../config/python/requirements-backtesting.txt
+        dest: "{{ user_home }}/requirements-backtesting.txt"
+        owner: "{{ vm_user }}"
+        group: "{{ vm_user }}"
+        mode: '0644'
+
+    - name: Installer les packages Python pour le backtesting
+      become: yes
+      become_user: "{{ vm_user }}"
+      pip:
+        requirements: "{{ user_home }}/requirements-backtesting.txt"
+        virtualenv: "{{ venv_path }}"
+      register: pip_installed
+
+# 6. Configuration de Jupyter
+- name: Configuration de Jupyter
+  block:
+    - name: Créer le répertoire de configuration Jupyter
+      file:
+        path: /etc/jupyter
+        state: directory
+        mode: '0755'
+
+    - name: Générer la configuration Jupyter
+      become: yes
+      become_user: "{{ vm_user }}"
+      command: "{{ venv_path }}/bin/jupyter notebook --generate-config"
+      args:
+        creates: "{{ user_home }}/.jupyter/jupyter_notebook_config.py"
+
+    - name: Configurer Jupyter pour accès à distance
+      copy:
+        dest: /etc/jupyter/jupyter_notebook_config.py
+        content: |
+          c.NotebookApp.ip = '0.0.0.0'
+          c.NotebookApp.port = {{ jupyter_port | default(8888) }}
+          c.NotebookApp.open_browser = False
+          c.NotebookApp.allow_root = True
+          c.NotebookApp.password = '{{ jupyter_password_hash | default("") }}'
+        mode: '0644'
+
+    - name: Créer le service systemd pour Jupyter
+      template:
+        src: ../templates/jupyter.service.j2
+        dest: /etc/systemd/system/jupyter.service
+        mode: '0644'
+      vars:
+        user_name: "{{ vm_user }}"
+
+    - name: Activer et démarrer le service Jupyter
+      systemd:
+        name: jupyter
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+# 7. Configuration du pare-feu
+- name: Configuration du pare-feu
+  block:
+    - name: Installer UFW
+      apt:
+        name: ufw
+        state: present
+
+    - name: Autoriser SSH
+      ufw:
+        rule: allow
+        name: OpenSSH
+
+    - name: Autoriser le port Jupyter
+      ufw:
+        rule: allow
+        port: "{{ jupyter_port | default(8888) }}"
+        proto: tcp
+
+    - name: Autoriser le port PostgreSQL
+      ufw:
+        rule: allow
+        port: 5432
+        proto: tcp
+
+    - name: Activer UFW
+      ufw:
+        state: enabled
+        policy: deny
+
+# 8. Création de la structure de projet
+- name: Création de la structure de projet
+  become: yes
+  become_user: "{{ vm_user }}"
+  file:
+    path: "{{ user_home }}/projects/{{ item }}"
+    state: directory
+    mode: '0755'
+  with_items:
+    - data
+    - strategies
+    - results
+    - models
+
+# 9. Création d'un script de stratégie de test
+- name: Création d'un script de stratégie de test
+  become: yes
+  become_user: "{{ vm_user }}"
+  copy:
+    dest: "{{ user_home }}/projects/strategies/test_strategy.py"
+    content: |
+      #!/usr/bin/env python3
+      """
+      Script de test pour une stratégie de trading simple basée sur des moyennes mobiles
+      """
+      import pandas as pd
+      import numpy as np
+      import yfinance as yf
+      import matplotlib.pyplot as plt
+      from datetime import datetime, timedelta
+
+      # Téléchargement des données
+      def download_data(symbol, period='5y'):
+          data = yf.download(symbol, period=period)
+          return data
+
+      # Stratégie de suivi de tendance simple
+      def apply_strategy(data, short_window=50, long_window=200):
+          # Création des moyennes mobiles
+          data['SMA_short'] = data['Close'].rolling(window=short_window).mean()
+          data['SMA_long'] = data['Close'].rolling(window=long_window).mean()
+          
+          # Génération des signaux
+          data['Signal'] = 0
+          data['Signal'] = np.where(data['SMA_short'] > data['SMA_long'], 1, 0)
+          data['Position'] = data['Signal'].diff()
+          
+          # Calcul des rendements
+          data['Returns'] = data['Close'].pct_change()
+          data['Strategy_Returns'] = data['Returns'] * data['Signal'].shift(1)
+          
+          # Calcul de la performance cumulative
+          data['Cumulative_Returns'] = (1 + data['Returns']).cumprod()
+          data['Strategy_Cumulative_Returns'] = (1 + data['Strategy_Returns']).cumprod()
+          
+          # Calcul du drawdown
+          data['Peak'] = data['Strategy_Cumulative_Returns'].cummax()
+          data['Drawdown'] = (data['Strategy_Cumulative_Returns'] - data['Peak']) / data['Peak']
+          
+          return data
+
+      # Fonction principale
+      def main():
+          # Téléchargement des données
+          symbol = 'SPY'
+          data = download_data(symbol)
+          
+          # Application de la stratégie
+          result = apply_strategy(data)
+          
+          # Calcul des métriques de performance
+          total_return = result['Strategy_Cumulative_Returns'].iloc[-1] - 1
+          max_drawdown = result['Drawdown'].min()
+          sharpe_ratio = result['Strategy_Returns'].mean() / result['Strategy_Returns'].std() * np.sqrt(252)
+          
+          # Affichage des résultats
+          print(f"Symbole: {symbol}")
+          print(f"Période: {result.index[0]} à {result.index[-1]}")
+          print(f"Rendement total: {total_return:.2%}")
+          print(f"Drawdown maximum: {max_drawdown:.2%}")
+          print(f"Ratio de Sharpe: {sharpe_ratio:.2f}")
+          print(f"Ratio rendement/drawdown: {abs(total_return/max_drawdown):.2f}")
+          
+          # Sauvegarde des résultats
+          result.to_csv(f"/home/{{ vm_user }}/projects/results/{symbol}_strategy_results.csv")
+          
+          # Visualisation
+          plt.figure(figsize=(12, 8))
+          plt.plot(result.index, result['Cumulative_Returns'], label='Buy & Hold')
+          plt.plot(result.index, result['Strategy_Cumulative_Returns'], label='Stratégie')
+          plt.title(f'Performance de la stratégie sur {symbol}')
+          plt.xlabel('Date')
+          plt.ylabel('Rendement cumulatif')
+          plt.legend()
+          plt.savefig(f"/home/{{ vm_user }}/projects/results/{symbol}_performance.png")
+          
+      if __name__ == "__main__":
+          main()
+    mode: '0755'
+
+# 10. Vérification des GPUs dans la VM
+- name: Vérification des GPUs
+  block:
+    - name: Vérifier si NVIDIA est installé
+      command: nvidia-smi
+      register: nvidia_smi_result
+      changed_when: false
+      failed_when: false
+
+    - name: Afficher l'état des GPUs
+      debug:
+        msg:
+          - "Détection des GPUs:"
+          - "{{ nvidia_smi_result.stdout if nvidia_smi_result.rc == 0 else 'Aucun GPU NVIDIA détecté ou pilotes non installés correctement' }}"
+
+# 11. Message final
+- name: Message final
+  debug:
+    msg:
+      - "Configuration de l'environnement de backtesting terminée!"
+      - "Accédez à Jupyter Lab sur http://{{ ansible_host }}:{{ jupyter_port | default(8888) }}"
+      - "Utilisateur: {{ vm_user }}"
+      - "Le script de test est disponible dans ~/projects/strategies/test_strategy.py"

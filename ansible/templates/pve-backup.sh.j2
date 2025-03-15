@@ -1,0 +1,95 @@
+#!/bin/bash
+# Script de sauvegarde automatique pour Proxmox VE
+# Généré automatiquement par Ansible - NE PAS MODIFIER MANUELLEMENT
+# Projet MLENV
+
+DATE=$(date +%Y-%m-%d)
+BACKUP_DIR="{{ backup_path | default('/mnt/vmstorage/backups') }}"
+LOG_FILE="/var/log/pve-backup/backup-${DATE}.log"
+EXTERNAL_HDD="{{ external_disk | default('/mnt/external_backup') }}"
+
+# Fonction d'affichage des messages
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+# Vérifier si le répertoire de sauvegarde existe
+if [ ! -d "$BACKUP_DIR" ]; then
+    mkdir -p "$BACKUP_DIR"
+    log "Répertoire de sauvegarde créé: $BACKUP_DIR"
+fi
+
+# Vérifier si le répertoire de logs existe
+if [ ! -d "/var/log/pve-backup" ]; then
+    mkdir -p "/var/log/pve-backup"
+fi
+
+# Démarrage de la sauvegarde
+log "Démarrage du processus de sauvegarde"
+log "Configuration: Storage = $BACKUP_DIR, Date = $DATE"
+
+# Sauvegarde des VMs
+log "Sauvegarde des machines virtuelles..."
+for VM_ID in $(qm list | tail -n+2 | awk '{print $1}')
+do
+    VM_NAME=$(qm config $VM_ID | grep name | cut -d: -f2 | tr -d ' ')
+    log "Sauvegarde de la VM $VM_ID ($VM_NAME)..."
+    vzdump $VM_ID --compress zstd --mode snapshot --storage backup {% if debug_mode %} --dumpdir "$BACKUP_DIR" {% endif %}
+    RESULT=$?
+    if [ $RESULT -eq 0 ]; then
+        log "Sauvegarde de la VM $VM_ID réussie"
+    else
+        log "ERREUR: Échec de la sauvegarde de la VM $VM_ID (code $RESULT)"
+    fi
+done
+
+# Sauvegarde des conteneurs
+log "Sauvegarde des conteneurs LXC..."
+for CT_ID in $(pct list | tail -n+2 | awk '{print $1}')
+do
+    CT_NAME=$(pct config $CT_ID | grep hostname | cut -d: -f2 | tr -d ' ')
+    log "Sauvegarde du conteneur $CT_ID ($CT_NAME)..."
+    vzdump $CT_ID --compress zstd --mode snapshot --storage backup {% if debug_mode %} --dumpdir "$BACKUP_DIR" {% endif %}
+    RESULT=$?
+    if [ $RESULT -eq 0 ]; then
+        log "Sauvegarde du conteneur $CT_ID réussie"
+    else
+        log "ERREUR: Échec de la sauvegarde du conteneur $CT_ID (code $RESULT)"
+    fi
+done
+
+# Copie des sauvegardes vers le disque externe (si configuré et monté)
+if [ -n "$EXTERNAL_HDD" ] && [ "$EXTERNAL_HDD" != "/dev/sdX1" ]; then
+    # Vérifier si le disque externe est monté
+    if [ ! -d "$EXTERNAL_HDD" ]; then
+        mkdir -p "$EXTERNAL_HDD"
+        log "Répertoire du disque externe créé: $EXTERNAL_HDD"
+    fi
+
+    # Vérifier si le point de montage est bien un système de fichiers monté
+    if mount | grep -q "$EXTERNAL_HDD"; then
+        log "Copie des sauvegardes vers le disque externe ($EXTERNAL_HDD)..."
+        rsync -av --delete "$BACKUP_DIR/" "$EXTERNAL_HDD/proxmox-backups/"
+        RESULT=$?
+        if [ $RESULT -eq 0 ]; then
+            log "Copie vers le disque externe réussie"
+        else
+            log "ERREUR: Échec de la copie vers le disque externe (code $RESULT)"
+        fi
+    else
+        log "AVERTISSEMENT: Le disque externe n'est pas monté sur $EXTERNAL_HDD"
+    fi
+fi
+
+# Nettoyage des anciennes sauvegardes (conserver les 7 derniers jours)
+log "Nettoyage des anciennes sauvegardes (> 7 jours)..."
+find "$BACKUP_DIR" -name "*.vma.zst" -mtime +7 -delete
+find "$BACKUP_DIR" -name "*.tar.zst" -mtime +7 -delete
+
+# Nettoyage des anciens logs (conserver les 30 derniers jours)
+log "Nettoyage des anciens logs (> 30 jours)..."
+find /var/log/pve-backup -name "backup-*.log" -mtime +30 -delete
+
+# Fin de la sauvegarde
+log "Processus de sauvegarde terminé avec succès"
+log "======================================================"

@@ -1,0 +1,27 @@
+# Packages Python pour l'environnement de backtesting
+numpy
+pandas
+scipy
+matplotlib
+seaborn
+scikit-learn
+statsmodels
+pytables
+jupyterlab
+ipykernel
+ipywidgets
+pyfolio
+backtrader
+vectorbt
+yfinance
+alpha_vantage
+ta
+ccxt
+dash
+plotly
+psycopg2-binary
+SQLAlchemy
+tensorflow
+torch
+torchvision
+torchaudio

@@ -1,0 +1,260 @@
+---
+# Playbook pour la configuration de base de Proxmox
+# Partie du projet MLENV
+
+# 1. Configuration des dépôts et paquets
+- name: Configuration des dépôts Proxmox
+  block:
+    - name: Ajouter le dépôt no-subscription
+      copy:
+        dest: /etc/apt/sources.list.d/pve-no-subscription.list
+        content: |
+          deb http://download.proxmox.com/debian/pve {{ ansible_distribution_release }} pve-no-subscription
+          deb http://download.proxmox.com/debian/ceph-quincy {{ ansible_distribution_release }} no-subscription
+        mode: '0644'
+      register: repos_configured
+
+    - name: Désactiver le dépôt enterprise
+      replace:
+        path: /etc/apt/sources.list.d/pve-enterprise.list
+        regexp: '^deb'
+        replace: '#deb'
+      ignore_errors: yes
+
+    - name: Mettre à jour la liste des paquets
+      apt:
+        update_cache: yes
+      when: repos_configured.changed
+
+    - name: Installer les paquets utiles
+      apt:
+        name:
+          - htop
+          - iotop
+          - iftop
+          - curl
+          - wget
+          - vim
+          - tmux
+          - qemu-guest-agent
+          - zfsutils-linux
+        state: present
+
+# 2. Configuration DNS
+- name: Configuration DNS
+  block:
+    - name: Sauvegarde du fichier resolv.conf original
+      command: cp /etc/resolv.conf /etc/resolv.conf.bak
+      args:
+        creates: /etc/resolv.conf.bak
+
+    - name: Configurer Cloudflare DNS si demandé
+      template:
+        src: templates/resolv.conf.j2
+        dest: /etc/resolv.conf
+        mode: '0644'
+      when: use_cloudflare_dns | default(true) | bool
+
+# 3. Désactivation de la fenêtre contextuelle d'abonnement
+- name: Désactivation de la fenêtre contextuelle d'abonnement
+  block:
+    - name: Créer une sauvegarde du fichier proxmoxlib.js
+      command: cp /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js.bak
+      args:
+        creates: /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js.bak
+      ignore_errors: yes
+
+    - name: Modifier le fichier proxmoxlib.js pour désactiver la fenêtre contextuelle
+      shell: sed -Ezi.bak "s/(Ext.Msg.show\(\{\s+title: gettext\('No valid sub)/void\(\{ \/\/\1/g" /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
+      args:
+        executable: /bin/bash
+      ignore_errors: yes
+      register: popup_disabled
+
+    - name: Redémarrer le service pveproxy
+      systemd:
+        name: pveproxy
+        state: restarted
+      when: popup_disabled.changed
+
+# 4. Configuration du stockage
+- name: Configuration du stockage
+  block:
+    - name: Créer les répertoires de stockage
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0775'
+      with_items:
+        - "{{ storage_path }}/images"
+        - "{{ storage_path }}/containers"
+        - "{{ storage_path }}/backups"
+        - "{{ storage_path }}/iso"
+
+    - name: Vérifier si les stockages sont déjà configurés
+      command: pvesm status
+      register: storage_status
+      changed_when: false
+
+    - name: Ajouter le stockage pour les VMs
+      command: pvesm add dir vm-storage --path {{ storage_path }}/images --content images,rootdir
+      when: "'vm-storage' not in storage_status.stdout"
+
+    - name: Ajouter le stockage pour les conteneurs
+      command: pvesm add dir ct-storage --path {{ storage_path }}/containers --content rootdir
+      when: "'ct-storage' not in storage_status.stdout"
+
+    - name: Ajouter le stockage pour les sauvegardes
+      command: pvesm add dir backup --path {{ storage_path }}/backups --content backup
+      when: "'backup' not in storage_status.stdout"
+
+    - name: Ajouter le stockage pour les ISOs
+      command: pvesm add dir iso --path {{ storage_path }}/iso --content iso
+      when: "'iso' not in storage_status.stdout"
+
+# 5. Configuration du VLAN (si activé)
+- name: Configuration des VLANs
+  block:
+    - name: Récupérer la liste des interfaces réseau
+      shell: ip -o link show | awk -F': ' '{print $2}' | grep vmbr | grep -v 'lo\|link\|docker'
+      register: network_interfaces
+      changed_when: false
+
+    - name: Activer le VLAN sur les interfaces bridge
+      command: pvesh set /nodes/localhost/network --iface {{ item }} --vlan-aware 1
+      with_items: "{{ network_interfaces.stdout_lines }}"
+      when: use_vlan | default(false) | bool
+      ignore_errors: yes
+
+# 6. Configuration du PCI Passthrough
+- name: Configuration du PCI Passthrough
+  block:
+    - name: Déterminer le type d'IOMMU (Intel ou AMD)
+      shell: lscpu | grep "Vendor ID" | awk '{print $3}'
+      register: cpu_vendor
+      changed_when: false
+
+    - name: Définir la variable IOMMU_FLAG selon le processeur
+      set_fact:
+        iommu_flag: "{{ 'intel_iommu=on' if cpu_vendor.stdout == 'GenuineIntel' else 'amd_iommu=on' }}"
+
+    - name: Configurer GRUB pour l'IOMMU
+      replace:
+        path: /etc/default/grub
+        regexp: 'GRUB_CMDLINE_LINUX_DEFAULT="[^"]*"'
+        replace: 'GRUB_CMDLINE_LINUX_DEFAULT="quiet {{ iommu_flag }} iommu=pt"'
+      register: grub_updated
+
+    - name: Mettre à jour GRUB
+      command: update-grub
+      when: grub_updated.changed
+
+    - name: Configurer les modules VFIO
+      copy:
+        dest: /etc/modules-load.d/vfio.conf
+        content: |
+          vfio
+          vfio_iommu_type1
+          vfio_pci
+        mode: '0644'
+      register: vfio_modules_configured
+
+    - name: Configurer les options VFIO-PCI
+      copy:
+        dest: /etc/modprobe.d/vfio.conf
+        content: "options vfio-pci ids={{ gpu_ids }}"
+        mode: '0644'
+      when: gpu_ids is defined and gpu_ids != ""
+      register: vfio_pci_configured
+
+    - name: Blacklister les pilotes NVIDIA
+      copy:
+        dest: /etc/modprobe.d/blacklist-nvidia.conf
+        content: |
+          blacklist nouveau
+          blacklist nvidia
+          blacklist nvidia_drm
+          blacklist nvidia_modeset
+          blacklist nvidia_uvm
+        mode: '0644'
+      register: nvidia_blacklisted
+
+    - name: Mettre à jour l'initramfs
+      command: update-initramfs -u -k all
+      when: vfio_modules_configured.changed or vfio_pci_configured.changed or nvidia_blacklisted.changed or grub_updated.changed
+
+# 7. Téléchargement des templates LXC
+- name: Téléchargement des templates LXC
+  block:
+    - name: Mettre à jour la liste des templates
+      command: pveam update
+      changed_when: false
+
+    - name: Lister les templates disponibles
+      command: pveam available --section system
+      register: available_templates
+      changed_when: false
+
+    - name: Télécharger le template Debian 12
+      command: pveam download local debian-12-standard_12.7-1_amd64.tar.zst
+      when: "'debian-12-standard_12.7-1_amd64.tar.zst' not in available_templates.stdout"
+
+# 8. Configuration du pare-feu
+- name: Configuration du pare-feu Proxmox
+  block:
+    - name: Créer le répertoire de configuration du pare-feu
+      file:
+        path: /etc/pve/firewall
+        state: directory
+        mode: '0755'
+
+    - name: Configurer le pare-feu cluster
+      copy:
+        dest: /etc/pve/firewall/cluster.fw
+        content: |
+          [OPTIONS]
+          enable: 1
+
+          [RULES]
+          IN SSH(ACCEPT) -i {{ bridge_interface }}
+          IN ACCEPT -i {{ bridge_interface }} -p tcp -dport 8006
+          IN ACCEPT -i {{ bridge_interface }} -p tcp -dport 80
+          IN ACCEPT -i {{ bridge_interface }} -p tcp -dport 443
+        mode: '0644'
+
+# 9. Configuration du script de sauvegarde
+- name: Configuration des sauvegardes
+  block:
+    - name: Créer le répertoire de logs
+      file:
+        path: /var/log/pve-backup
+        state: directory
+        mode: '0755'
+
+    - name: Copier le script de sauvegarde
+      template:
+        src: templates/pve-backup.sh.j2
+        dest: /usr/local/bin/pve-backup.sh
+        mode: '0755'
+
+    - name: Configurer la tâche cron pour les sauvegardes
+      cron:
+        name: "Sauvegarde automatique des VMs et conteneurs"
+        hour: "1"
+        minute: "0"
+        job: "/usr/local/bin/pve-backup.sh > /var/log/pve-backup/backup-$(date +\\%Y-\\%m-\\%d).log 2>&1"
+
+# 10. Notification de fin de configuration
+- name: Afficher un résumé de la configuration
+  debug:
+    msg:
+      - "Configuration de base de Proxmox terminée"
+      - "Stockages configurés: vm-storage, ct-storage, backup, iso"
+      - "Passthrough GPU configuré: {{ gpu_ids if gpu_ids is defined and gpu_ids != '' else 'Non configuré' }}"
+      - "VLAN activé: {{ 'Oui' if use_vlan | default(false) | bool else 'Non' }}"
+      - "Important: Un redémarrage est nécessaire pour activer le passthrough GPU et l'IOMMU"
+
+- name: Vérifier si un redémarrage est nécessaire
+  debug:
+    msg: "Un redémarrage est nécessaire pour appliquer les modifications IOMMU et VFIO"
+  when: vfio_modules_configured.changed or vfio_pci_configured.changed or nvidia_blacklisted.changed or grub_updated.changed

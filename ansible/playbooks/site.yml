@@ -1,0 +1,85 @@
+---
+# Playbook principal pour la configuration de l'environnement MLENV
+# À exécuter avec: ansible-playbook -i inventory/hosts.yml playbooks/site.yml
+
+- name: Configuration de Proxmox
+  hosts: proxmox
+  become: true
+  gather_facts: true
+  tags:
+    - proxmox
+    - setup
+  tasks:
+    - name: Inclure le playbook de configuration Proxmox
+      include_tasks: proxmox-setup.yml
+
+- name: Création et configuration des VMs
+  hosts: proxmox
+  become: true
+  gather_facts: true
+  tags:
+    - vms
+  tasks:
+    - name: Inclure le playbook de création de la VM de backtesting
+      include_tasks: backtesting-vm.yml
+      tags:
+        - backtesting
+
+    - name: Inclure le playbook de création de la VM de machine learning
+      include_tasks: ml-vm.yml
+      tags:
+        - ml
+
+    - name: Inclure le playbook de création de la VM de serveur web (optionnel)
+      include_tasks: web-vm.yml
+      tags:
+        - webserver
+      when: create_web_server | default(false) | bool
+
+- name: Création et configuration des conteneurs LXC
+  hosts: proxmox
+  become: true
+  gather_facts: true
+  tags:
+    - containers
+  tasks:
+    - name: Inclure le playbook de création des conteneurs
+      include_tasks: container-setup.yml
+
+- name: Configuration de la VM de backtesting
+  hosts: backtesting
+  become: true
+  gather_facts: true
+  tags:
+    - vm-setup
+    - backtesting
+  vars:
+    vm_user: "{{ backtesting_user }}"
+  tasks:
+    - name: Inclure le playbook de configuration de la VM de backtesting
+      include_tasks: backtesting-vm-setup.yml
+      when: configure_vm_environments | default(true) | bool
+
+- name: Configuration de la VM de machine learning
+  hosts: machine_learning
+  become: true
+  gather_facts: true
+  tags:
+    - vm-setup
+    - ml
+  vars:
+    vm_user: "{{ ml_user }}"
+  tasks:
+    - name: Inclure le playbook de configuration de la VM de machine learning
+      include_tasks: ml-vm-setup.yml
+      when: configure_vm_environments | default(true) | bool
+
+- name: Configuration des sauvegardes et maintenance
+  hosts: proxmox
+  become: true
+  gather_facts: true
+  tags:
+    - maintenance
+  tasks:
+    - name: Inclure le playbook de configuration des sauvegardes
+      include_tasks: backup-setup.yml

@@ -1,0 +1,6 @@
+# Configuration Jupyter générée par Ansible
+c.NotebookApp.ip = '0.0.0.0'
+c.NotebookApp.port = {{ jupyter_port | default(8888) }}
+c.NotebookApp.open_browser = False
+c.NotebookApp.allow_root = True
+c.NotebookApp.password = '{{ jupyter_password_hash }}'  # À définir dans les variables

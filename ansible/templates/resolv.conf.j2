@@ -1,0 +1,21 @@
+# Configuration DNS générée par Ansible
+# Projet MLENV
+{% if use_cloudflare_dns | default(true) %}
+# Utilisation des DNS Cloudflare
+nameserver 1.1.1.1
+nameserver 1.0.0.1
+{% else %}
+# Utilisation des DNS par défaut
+{% if custom_dns_servers is defined %}
+{% for dns_server in custom_dns_servers %}
+nameserver {{ dns_server }}
+{% endfor %}
+{% else %}
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+{% endif %}
+{% endif %}
+
+# Options DNS
+options edns0
+options timeout:2

@@ -1,0 +1,64 @@
+---
+# Variables globales pour tous les hôtes
+
+# Configuration Proxmox
+proxmox:
+  storage_path: /mnt/vmstorage
+  templates_storage: "local"
+  vm_storage: "vm-storage"
+  ct_storage: "ct-storage"
+  backup_storage: "backup"
+  iso_storage: "iso"
+
+# Configuration réseau
+network:
+  bridge: vmbr0
+  vlan_aware: true
+
+# Configuration GPU
+gpu:
+  enable_passthrough: true
+  primary_gpu_id: "01:00.0"  # À adapter selon votre configuration
+  all_gpus: true  # Passer tous les GPUs disponibles à la VM principale
+
+# Configuration des VMs
+vms:
+  backtesting:
+    id: 100
+    name: "BacktestingGPU"
+    memory: 16384  # 16 Go
+    cores: 2
+    disk_size: "60G"
+    os_type: "ubuntu"
+    iso: "ubuntu-22.04.4-live-server-amd64.iso"
+    username: "backtester"
+    password: "backtester"  # À modifier pour la production
+
+  ml:
+    id: 101
+    name: "MachineLearning"
+    memory: 16384  # 16 Go
+    cores: 2
+    disk_size: "100G"
+    os_type: "ubuntu"
+    iso: "ubuntu-22.04.4-live-server-amd64.iso"
+    username: "aitrader"
+    password: "aitrader"  # À modifier pour la production
+
+# Configuration des conteneurs
+containers:
+  db:
+    id: 200
+    hostname: "db-server"
+    memory: 2048
+    cores: 1
+    disk_size: "20G"
+    template: "debian-12-standard_12.7-1_amd64.tar.zst"
+
+  backup:
+    id: 201
+    hostname: "backup-server"
+    memory: 2048
+    cores: 1
+    disk_size: "20G"
+    template: "debian-12-standard_12.7-1_amd64.tar.zst"
