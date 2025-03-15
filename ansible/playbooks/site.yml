@@ -4,7 +4,6 @@
 
 - name: Configuration de Proxmox
   hosts: proxmox
-  become: true
   gather_facts: true
   tags:
     - proxmox
@@ -13,42 +12,32 @@
     - name: Inclure le playbook de configuration Proxmox
       include_tasks: proxmox-setup.yml
 
-- name: Création et configuration des VMs
-  hosts: proxmox
-  become: true
-  gather_facts: true
+- name: Création des VMs Backtesting
+  import_playbook: backtesting-vm.yml
   tags:
     - vms
-  tasks:
-    - name: Inclure le playbook de création de la VM de backtesting
-      include_tasks: backtesting-vm.yml
-      tags:
-        - backtesting
+    - backtesting
 
-    - name: Inclure le playbook de création de la VM de machine learning
-      include_tasks: ml-vm.yml
-      tags:
-        - ml
-
-    - name: Inclure le playbook de création de la VM de serveur web (optionnel)
-      include_tasks: web-vm.yml
-      tags:
-        - webserver
-      when: create_web_server | default(false) | bool
+- name: Création des VMs Machine Learning
+  import_playbook: ml-vm.yml
+  tags:
+    - vms
+    - ml
 
 - name: Création et configuration des conteneurs LXC
-  hosts: proxmox
-  become: true
-  gather_facts: true
+  import_playbook: container-setup.yml
   tags:
     - containers
-  tasks:
-    - name: Inclure le playbook de création des conteneurs
-      include_tasks: container-setup.yml
 
-- name: Configuration de la VM de backtesting
+- name: Création de la VM de serveur web (optionnel)
+  import_playbook: web-vm.yml
+  tags:
+    - vms
+    - webserver
+  when: create_web_server | default(false) | bool
+
+- name: Configuration de l'environnement Backtesting
   hosts: backtesting
-  become: true
   gather_facts: true
   tags:
     - vm-setup
@@ -58,11 +47,10 @@
   tasks:
     - name: Inclure le playbook de configuration de la VM de backtesting
       include_tasks: backtesting-vm-setup.yml
-      when: configure_vm_environments | default(true) | bool
+      when: configure_vm_environments | default(false) | bool
 
-- name: Configuration de la VM de machine learning
+- name: Configuration de l'environnement Machine Learning
   hosts: machine_learning
-  become: true
   gather_facts: true
   tags:
     - vm-setup
@@ -72,14 +60,29 @@
   tasks:
     - name: Inclure le playbook de configuration de la VM de machine learning
       include_tasks: ml-vm-setup.yml
-      when: configure_vm_environments | default(true) | bool
+      when: configure_vm_environments | default(false) | bool
 
 - name: Configuration des sauvegardes et maintenance
   hosts: proxmox
-  become: true
   gather_facts: true
   tags:
     - maintenance
   tasks:
-    - name: Inclure le playbook de configuration des sauvegardes
-      include_tasks: backup-setup.yml
+    - name: Vérifier si le script de sauvegarde existe
+      stat:
+        path: /usr/local/bin/pve-backup.sh
+      register: backup_script
+
+    - name: Copier le script de sauvegarde
+      template:
+        src: ../templates/pve-backup.sh.j2
+        dest: /usr/local/bin/pve-backup.sh
+        mode: '0755'
+      when: not backup_script.stat.exists
+
+    - name: Configurer la tâche cron pour les sauvegardes
+      cron:
+        name: "Sauvegardes Proxmox quotidiennes"
+        hour: "1"
+        minute: "0"
+        job: "/usr/local/bin/pve-backup.sh > /var/log/pve-backup/backup-$(date +\\%Y-\\%m-\\%d).log 2>&1"

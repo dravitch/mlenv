@@ -1,64 +1,52 @@
 ---
 # Variables globales pour tous les hôtes
+# Ces variables peuvent être remplacées au niveau du groupe ou de l'hôte
 
-# Configuration Proxmox
-proxmox:
-  storage_path: /mnt/vmstorage
-  templates_storage: "local"
-  vm_storage: "vm-storage"
-  ct_storage: "ct-storage"
-  backup_storage: "backup"
-  iso_storage: "iso"
-
-# Configuration réseau
-network:
-  bridge: vmbr0
-  vlan_aware: true
+# Configuration de stockage
+storage_path: "/mnt/vmstorage"
+backup_path: "/mnt/vmstorage/backups"
+external_disk: "/dev/sdX1"  # À modifier selon votre configuration
 
 # Configuration GPU
-gpu:
-  enable_passthrough: true
-  primary_gpu_id: "01:00.0"  # À adapter selon votre configuration
-  all_gpus: true  # Passer tous les GPUs disponibles à la VM principale
+gpu_ids: "10de:2184,10de:1e84"  # À modifier selon vos cartes GPU (format: vendorID:deviceID)
+backtesting_gpu_indices: [0]    # Indices des GPU à attribuer à la VM de backtesting
+ml_gpu_indices: [1, 2, 3, 4, 5, 6, 7]  # Indices des GPU à attribuer à la VM de machine learning
 
 # Configuration des VMs
-vms:
-  backtesting:
-    id: 100
-    name: "BacktestingGPU"
-    memory: 16384  # 16 Go
-    cores: 2
-    disk_size: "60G"
-    os_type: "ubuntu"
-    iso: "ubuntu-22.04.4-live-server-amd64.iso"
-    username: "backtester"
-    password: "backtester"  # À modifier pour la production
-
-  ml:
-    id: 101
-    name: "MachineLearning"
-    memory: 16384  # 16 Go
-    cores: 2
-    disk_size: "100G"
-    os_type: "ubuntu"
-    iso: "ubuntu-22.04.4-live-server-amd64.iso"
-    username: "aitrader"
-    password: "aitrader"  # À modifier pour la production
+vm_memory: 4096
+vm_cores: 2
+vm_disk_size: "40G"
+vm_iso_image: "local:iso/ubuntu-22.04.4-live-server-amd64.iso"  # Chemin vers l'ISO d'installation
 
 # Configuration des conteneurs
-containers:
-  db:
-    id: 200
-    hostname: "db-server"
-    memory: 2048
-    cores: 1
-    disk_size: "20G"
-    template: "debian-12-standard_12.7-1_amd64.tar.zst"
+ct_memory: 1024
+ct_cores: 1
 
-  backup:
-    id: 201
-    hostname: "backup-server"
-    memory: 2048
-    cores: 1
-    disk_size: "20G"
-    template: "debian-12-standard_12.7-1_amd64.tar.zst"
+# Configuration des utilisateurs
+backtesting_user: "backtester"
+ml_user: "aitrader"
+default_password: "changeme"  # À modifier pour la production!
+
+# Configuration Jupyter
+jupyter_port: 8888
+# Généré avec: python -c "from jupyter_server.auth import passwd; print(passwd('votre_mot_de_passe'))"
+jupyter_password_hash: "sha1:74ba40f8a388:c913541b7ee99d15d5ed31d4226bf7838f83a50e"  # À remplacer par votre hash
+
+# Configuration PostgreSQL
+db_name: "tradingdb"
+db_user: "trading"
+db_password: "secure_password"  # À modifier pour la production!
+
+# Configuration réseau
+bridge_interface: "vmbr0"
+use_vlan: false
+vlan_id: 100
+
+# Options avancées
+iommu_type: "intel"  # ou "amd"
+debug_mode: false
+
+# Déploiement
+start_vm_after_creation: false  # Démarrer les VMs après leur création
+configure_vm_environments: false  # Configurer les environnements Python dans les VMs
+create_web_server: false  # Créer la VM du serveur web

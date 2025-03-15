@@ -1,159 +1,231 @@
 ---
-# Playbook pour configurer les conteneurs LXC
-- name: Configuration des conteneurs LXC
+# Playbook pour la création et configuration des conteneurs LXC
+# Partie du projet MLENV
+
+- name: Création et configuration des conteneurs LXC
   hosts: proxmox
-  become: true
   gather_facts: true
+
   tasks:
-    - name: Téléchargement du template Debian 12 si nécessaire
-      shell: pveam update && pveam download {{ proxmox.templates_storage }} debian-12-standard_12.7-1_amd64.tar.zst
-      register: template_download
-      failed_when: template_download.rc != 0 and "already exists" not in template_download.stderr
-      changed_when: "'already exists' not in template_download.stdout"
+    # Définir les variables locales
+    - name: Définir les variables locales
+      set_fact:
+        db_container_id: "{{ hostvars[inventory_hostname]['db_container_id'] }}"
+        backup_container_id: "{{ hostvars[inventory_hostname]['backup_container_id'] }}"
 
-    - name: Création du conteneur pour la base de données
-      shell: |
-        # Vérifier si le conteneur existe déjà
-        if pct list | grep -q "{{ containers.db.id }}"; then
-          echo "Container {{ containers.db.id }} exists already"
-          exit 0
-        fi
-        
-        # Créer le conteneur
-        pct create {{ containers.db.id }} \
-          {{ proxmox.templates_storage }}:vztmpl/{{ containers.db.template }} \
-          --hostname {{ containers.db.hostname }} \
-          --memory {{ containers.db.memory }} \
-          --cores {{ containers.db.cores }} \
-          --rootfs {{ proxmox.ct_storage }}:{{ containers.db.disk_size }} \
-          --net0 name=eth0,bridge={{ network.bridge }},ip=dhcp \
-          --onboot 1
-      args:
-        executable: /bin/bash
-      register: create_db_container
-      changed_when: "'exists already' not in create_db_container.stdout"
+    # 1. Vérification des templates disponibles
+    - name: Vérifier si le template Debian 12 est disponible
+      shell: pveam list local | grep debian-12-standard
+      register: template_check
+      changed_when: false
+      failed_when: false
 
-    - name: Démarrage et configuration du conteneur DB
-      block:
-        - name: Démarrage du conteneur DB
-          shell: pct start {{ containers.db.id }}
-          args:
-            executable: /bin/bash
-          register: start_container
-          failed_when: start_container.rc != 0 and "already running" not in start_container.stderr
+    - name: Télécharger le template Debian 12 si nécessaire
+      shell: pveam download local debian-12-standard_12.7-1_amd64.tar.zst
+      when: template_check.rc != 0
 
-        - name: Attente que le conteneur soit prêt
-          wait_for:
-            timeout: 10
+    # 2. Création du conteneur pour la base de données
+    - name: Vérifier si le conteneur DB existe déjà
+      shell: pct list | grep -w "{{ db_container_id }}"
+      register: db_container_exists
+      changed_when: false
+      failed_when: false
 
-        - name: Mise à jour du conteneur DB
-          shell: pct exec {{ containers.db.id }} -- bash -c "apt-get update && apt-get upgrade -y"
-          args:
-            executable: /bin/bash
+    - name: Créer le conteneur PostgreSQL
+      shell: >
+        pct create {{ db_container_id }} 
+        local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst
+        --hostname db-server
+        --memory {{ ct_memory }}
+        --swap 512
+        --cores {{ ct_cores }}
+        --rootfs ct-storage:20
+        --net0 name=eth0,bridge={{ bridge_interface }},ip=dhcp
+        --onboot 1
+        --features nesting=0
+      when: db_container_exists.rc != 0
 
-        - name: Installation de PostgreSQL
-          shell: pct exec {{ containers.db.id }} -- bash -c "apt-get install -y postgresql postgresql-contrib"
-          args:
-            executable: /bin/bash
+    - name: Démarrer le conteneur DB
+      shell: pct start {{ db_container_id }}
+      when: db_container_exists.rc != 0
+      register: db_container_started
+      # Ignorer les erreurs si le conteneur est déjà démarré
+      failed_when: >
+        db_container_started.rc != 0 and 
+        "already running" not in db_container_started.stderr
 
-        - name: Activation de PostgreSQL au démarrage
-          shell: pct exec {{ containers.db.id }} -- bash -c "systemctl enable postgresql && systemctl start postgresql"
-          args:
-            executable: /bin/bash
+    - name: Attendre que le conteneur DB soit prêt
+      wait_for:
+        timeout: 10
+      when: db_container_exists.rc != 0
 
-        - name: Configuration de PostgreSQL pour accepter les connexions externes
-          shell: |
-            pct exec {{ containers.db.id }} -- bash -c "echo \"listen_addresses = '*'\" >> /etc/postgresql/*/main/postgresql.conf"
-            pct exec {{ containers.db.id }} -- bash -c "echo \"host all all 0.0.0.0/0 md5\" >> /etc/postgresql/*/main/pg_hba.conf"
-            pct exec {{ containers.db.id }} -- bash -c "systemctl restart postgresql"
-          args:
-            executable: /bin/bash
-      when: "'exists already' not in create_db_container.stdout"
+    # 3. Installation et configuration de PostgreSQL dans le conteneur DB
+    - name: Mettre à jour les paquets dans le conteneur DB
+      shell: pct exec {{ db_container_id }} -- apt-get update && apt-get upgrade -y
+      when: db_container_exists.rc != 0
 
-    - name: Création du conteneur pour les sauvegardes
-      shell: |
-        # Vérifier si le conteneur existe déjà
-        if pct list | grep -q "{{ containers.backup.id }}"; then
-          echo "Container {{ containers.backup.id }} exists already"
-          exit 0
-        fi
-        
-        # Créer le conteneur
-        pct create {{ containers.backup.id }} \
-          {{ proxmox.templates_storage }}:vztmpl/{{ containers.backup.template }} \
-          --hostname {{ containers.backup.hostname }} \
-          --memory {{ containers.backup.memory }} \
-          --cores {{ containers.backup.cores }} \
-          --rootfs {{ proxmox.ct_storage }}:{{ containers.backup.disk_size }} \
-          --net0 name=eth0,bridge={{ network.bridge }},ip=dhcp \
-          --onboot 1
-      args:
-        executable: /bin/bash
-      register: create_backup_container
-      changed_when: "'exists already' not in create_backup_container.stdout"
+    - name: Installer PostgreSQL dans le conteneur DB
+      shell: pct exec {{ db_container_id }} -- apt-get install -y postgresql postgresql-contrib
+      when: db_container_exists.rc != 0
 
-    - name: Démarrage et configuration du conteneur de sauvegarde
-      block:
-        - name: Démarrage du conteneur de sauvegarde
-          shell: pct start {{ containers.backup.id }}
-          args:
-            executable: /bin/bash
-          register: start_container
-          failed_when: start_container.rc != 0 and "already running" not in start_container.stderr
+    - name: Activer et démarrer PostgreSQL
+      shell: pct exec {{ db_container_id }} -- systemctl enable postgresql && systemctl start postgresql
+      when: db_container_exists.rc != 0
 
-        - name: Attente que le conteneur soit prêt
-          wait_for:
-            timeout: 10
+    - name: Configurer PostgreSQL pour accepter les connexions externes
+      shell: pct exec {{ db_container_id }} -- bash -c "echo \"listen_addresses = '*'\" >> /etc/postgresql/*/main/postgresql.conf"
+      when: db_container_exists.rc != 0
 
-        - name: Mise à jour du conteneur de sauvegarde
-          shell: pct exec {{ containers.backup.id }} -- bash -c "apt-get update && apt-get upgrade -y"
-          args:
-            executable: /bin/bash
+    - name: Configurer l'authentification PostgreSQL
+      shell: pct exec {{ db_container_id }} -- bash -c "echo \"host all all 0.0.0.0/0 md5\" >> /etc/postgresql/*/main/pg_hba.conf"
+      when: db_container_exists.rc != 0
 
-        - name: Installation des outils de sauvegarde
-          shell: pct exec {{ containers.backup.id }} -- bash -c "apt-get install -y rsync cron"
-          args:
-            executable: /bin/bash
+    - name: Redémarrer PostgreSQL pour appliquer les changements
+      shell: pct exec {{ db_container_id }} -- systemctl restart postgresql
+      when: db_container_exists.rc != 0
 
-        - name: Création du script de montage pour disque externe
-          copy:
-            dest: /tmp/mount-external-disk.sh
-            content: |
-              #!/bin/bash
-              # Script pour monter le disque externe de sauvegarde
-              DEVICE="/dev/sdX1"  # À modifier selon votre disque
-              MOUNT_POINT="/mnt/external_backup"
+    # 4. Création du conteneur pour les sauvegardes
+    - name: Vérifier si le conteneur de sauvegarde existe déjà
+      shell: pct list | grep -w "{{ backup_container_id }}"
+      register: backup_container_exists
+      changed_when: false
+      failed_when: false
 
-              mkdir -p $MOUNT_POINT
-              mount $DEVICE $MOUNT_POINT || echo "Erreur lors du montage du disque."
+    - name: Créer le conteneur de sauvegarde
+      shell: >
+        pct create {{ backup_container_id }} 
+        local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst
+        --hostname backup-server
+        --memory {{ ct_memory }}
+        --swap 512
+        --cores {{ ct_cores }}
+        --rootfs ct-storage:20
+        --net0 name=eth0,bridge={{ bridge_interface }},ip=dhcp
+        --onboot 1
+        --features nesting=0
+      when: backup_container_exists.rc != 0
 
-              # Ajout d'une entrée dans fstab pour le montage automatique
-              if ! grep -q "$MOUNT_POINT" /etc/fstab; then
-                  echo "$DEVICE $MOUNT_POINT ext4 defaults 0 2" >> /etc/fstab
+    - name: Démarrer le conteneur de sauvegarde
+      shell: pct start {{ backup_container_id }}
+      when: backup_container_exists.rc != 0
+      register: backup_container_started
+      # Ignorer les erreurs si le conteneur est déjà démarré
+      failed_when: >
+        backup_container_started.rc != 0 and 
+        "already running" not in backup_container_started.stderr
+
+    - name: Attendre que le conteneur de sauvegarde soit prêt
+      wait_for:
+        timeout: 10
+      when: backup_container_exists.rc != 0
+
+    # 5. Installation et configuration des outils de sauvegarde
+    - name: Mettre à jour les paquets dans le conteneur de sauvegarde
+      shell: pct exec {{ backup_container_id }} -- apt-get update && apt-get upgrade -y
+      when: backup_container_exists.rc != 0
+
+    - name: Installer les outils de sauvegarde
+      shell: pct exec {{ backup_container_id }} -- apt-get install -y rsync cron
+      when: backup_container_exists.rc != 0
+
+    # 6. Configuration du montage du disque externe
+    - name: Créer le script de montage du disque externe
+      copy:
+        dest: /tmp/mount-external-disk.sh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # Script pour monter le disque externe de sauvegarde
+          # Adaptez le périphérique selon votre configuration
+          
+          DEVICE="{{ external_disk | default('/dev/sdX1') }}"  # À modifier selon votre disque
+          MOUNT_POINT="/mnt/external_backup"
+          
+          mkdir -p $MOUNT_POINT
+          
+          # Vérifier si le disque est déjà monté
+          if ! mountpoint -q "$MOUNT_POINT"; then
+              # Vérifier si le périphérique existe
+              if [ -b "$DEVICE" ]; then
+                  mount $DEVICE $MOUNT_POINT || echo "Erreur lors du montage du disque."
+                  echo "Disque monté avec succès sur $MOUNT_POINT"
+              else
+                  echo "Le périphérique $DEVICE n'existe pas."
               fi
-            mode: '0755'
+          else
+              echo "Le point de montage $MOUNT_POINT est déjà monté."
+          fi
+          
+          # Ajout d'une entrée dans fstab pour le montage automatique au démarrage
+          if grep -q "$MOUNT_POINT" /etc/fstab; then
+              echo "Le disque est déjà configuré dans fstab."
+          else
+              echo "$DEVICE $MOUNT_POINT ext4 defaults 0 2" >> /etc/fstab
+              echo "Disque ajouté à fstab pour montage automatique."
+          fi
+      when: backup_container_exists.rc != 0
 
-        - name: Transfert du script vers le conteneur
-          shell: pct push {{ containers.backup.id }} /tmp/mount-external-disk.sh /root/mount-external-disk.sh
-          args:
-            executable: /bin/bash
+    - name: Transférer le script de montage vers le conteneur de sauvegarde
+      shell: pct push {{ backup_container_id }} /tmp/mount-external-disk.sh /root/mount-external-disk.sh
+      when: backup_container_exists.rc != 0
 
-        - name: Rendre le script exécutable
-          shell: pct exec {{ containers.backup.id }} -- bash -c "chmod +x /root/mount-external-disk.sh"
-          args:
-            executable: /bin/bash
-      when: "'exists already' not in create_backup_container.stdout"
+    - name: Rendre le script exécutable dans le conteneur
+      shell: pct exec {{ backup_container_id }} -- chmod +x /root/mount-external-disk.sh
+      when: backup_container_exists.rc != 0
 
-    - name: Message de configuration terminée
+    # 7. Création du script de sauvegarde de base de données
+    - name: Créer le script de sauvegarde de base de données
+      copy:
+        dest: /tmp/backup-database.sh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # Script de sauvegarde de la base de données PostgreSQL
+          
+          DATE=$(date +%Y-%m-%d)
+          BACKUP_DIR="/mnt/external_backup/db_backups"
+          DB_HOST="{{ hostvars[inventory_hostname]['db_container_id'] | default('db-server') }}"
+          DB_USER="{{ db_user | default('postgres') }}"
+          DB_NAME="{{ db_name | default('tradingdb') }}"
+          
+          # Création du répertoire de sauvegarde s'il n'existe pas
+          mkdir -p $BACKUP_DIR
+          
+          # Sauvegarde de la base de données
+          echo "Sauvegarde de la base de données $DB_NAME..."
+          pg_dump -h $DB_HOST -U $DB_USER $DB_NAME > "$BACKUP_DIR/${DB_NAME}_${DATE}.sql"
+          
+          # Compression de la sauvegarde
+          gzip "$BACKUP_DIR/${DB_NAME}_${DATE}.sql"
+          
+          # Conservation des 7 derniers jours de sauvegardes
+          find $BACKUP_DIR -name "*.sql.gz" -mtime +7 -delete
+          
+          echo "Sauvegarde terminée: $BACKUP_DIR/${DB_NAME}_${DATE}.sql.gz"
+      when: backup_container_exists.rc != 0
+
+    - name: Transférer le script de sauvegarde vers le conteneur
+      shell: pct push {{ backup_container_id }} /tmp/backup-database.sh /root/backup-database.sh
+      when: backup_container_exists.rc != 0
+
+    - name: Rendre le script de sauvegarde exécutable
+      shell: pct exec {{ backup_container_id }} -- chmod +x /root/backup-database.sh
+      when: backup_container_exists.rc != 0
+
+    # 8. Configuration d'une tâche cron pour la sauvegarde
+    - name: Configurer une tâche cron pour la sauvegarde quotidienne
+      shell: pct exec {{ backup_container_id }} -- bash -c 'echo "0 2 * * * /root/backup-database.sh > /var/log/db-backup.log 2>&1" > /tmp/crontab && crontab /tmp/crontab'
+      when: backup_container_exists.rc != 0
+
+    # 9. Résumé de la configuration
+    - name: Afficher un résumé de la configuration des conteneurs
       debug:
-        msg: >
-          Les conteneurs ont été créés avec succès:
-          
-          - Conteneur DB ({{ containers.db.id }}) - PostgreSQL installé
-          - Conteneur de sauvegarde ({{ containers.backup.id }}) - Outils de sauvegarde installés
-          
-          Pour connecter le disque externe USB au conteneur de sauvegarde:
-          1. Arrêtez le conteneur: pct stop {{ containers.backup.id }}
-          2. Modifiez /root/mount-external-disk.sh dans le conteneur pour définir le bon périphérique
-          3. Redémarrez le conteneur: pct start {{ containers.backup.id }}
-          4. Exécutez le script dans le conteneur: pct exec {{ containers.backup.id }} -- /root/mount-external-disk.sh
+        msg:
+          - "Conteneurs configurés:"
+          - "- Conteneur PostgreSQL (ID: {{ db_container_id }})"
+          - "  - Host: db-server"
+          - "  - Port: 5432"
+          - "- Conteneur de sauvegarde (ID: {{ backup_container_id }})"
+          - "  - Sauvegarde quotidienne à 2h du matin"
+          - "  - Script de montage du disque externe: /root/mount-external-disk.sh"
+          - "  - Script de sauvegarde de base de données: /root/backup-database.sh"

@@ -2,122 +2,122 @@
 # Playbook pour la création et configuration de la VM de machine learning
 # Partie du projet MLENV
 
-# Variables locales
-- name: Définir les variables locales
-  set_fact:
-    vm_id: "{{ hostvars['machine_learning']['vm_id'] }}"
-    vm_name: "MachineLearningGPU"
-    vm_description: "VM pour le machine learning et deep learning"
-    vm_memory: "{{ vm_memory | default(8192) }}"
-    vm_cores: "{{ vm_cores | default(2) }}"
-    vm_disk_size: "{{ vm_disk_size | default('40G') }}"
-    vm_iso_image: "{{ vm_iso_image | default('local:iso/ubuntu-22.04.3-live-server-amd64.iso') }}"
+- name: Création et configuration de la VM de machine learning
+  hosts: machine_learning
+  gather_facts: false
 
-# 1. Vérifier si la VM existe déjà
-- name: Vérifier si la VM existe déjà
-  shell: qm list | grep ' {{ vm_id }} '
-  register: vm_exists
-  changed_when: false
-  failed_when: false
+  tasks:
+    # 1. Définir les variables locales
+    - name: Définir les variables locales
+      set_fact:
+        vm_name: "MachineLearningGPU"
+        vm_description: "VM pour le machine learning et deep learning"
 
-# 2. Création de la VM
-- name: Créer la VM de machine learning
-  block:
-    - name: Créer la VM de base
-      command: >
-        qm create {{ vm_id }} 
-        --name {{ vm_name }}
-        --memory {{ vm_memory }}
-        --cores {{ vm_cores }}
-        --net0 virtio,bridge={{ bridge_interface }}
-        --bios ovmf
-        --machine q35
-        --cpu host
-        --ostype l26
-        --agent 1
-      when: vm_exists.rc != 0
-
-    - name: Ajouter le disque EFI
-      command: qm set {{ vm_id }} --efidisk0 vm-storage:1
-      when: vm_exists.rc != 0
-
-    - name: Ajouter le disque principal
-      command: qm set {{ vm_id }} --sata0 vm-storage:{{ vm_disk_size }},ssd=1
-      when: vm_exists.rc != 0
-
-    - name: Configurer les paramètres CPU avancés
-      command: qm set {{ vm_id }} --args "-cpu 'host,+kvm_pv_unhalt,+kvm_pv_eoi,hv_vendor_id=NV43FIX,kvm=off'"
-      when: vm_exists.rc != 0
-
-    - name: Ajouter l'ISO d'installation Ubuntu 22.04
-      command: qm set {{ vm_id }} --ide2 {{ vm_iso_image }},media=cdrom
-      when: vm_exists.rc != 0
-      failed_when: false
-      register: iso_added
-
-    - name: Message si ISO introuvable
-      debug:
-        msg: "ATTENTION: L'image ISO '{{ vm_iso_image }}' n'a pas été trouvée. Veuillez télécharger ou spécifier une autre image."
-      when: iso_added.rc != 0
-
-# 3. Configuration du passthrough GPU
-- name: Configurer le passthrough GPU pour la VM machine learning
-  block:
-    - name: Arrêter la VM si elle est en cours d'exécution
-      command: qm stop {{ vm_id }}
-      when: vm_exists.rc == 0
-      register: stop_result
-      failed_when: stop_result.rc != 0 and "does not exist" not in stop_result.stderr
-
-    - name: Récupérer les informations sur les cartes GPU
-      shell: lspci -nn | grep -i nvidia | grep -i vga | awk '{print $1}'
-      register: gpu_addresses
-      changed_when: false
-
-    - name: Vérifier la configuration GPU actuelle
-      shell: qm config {{ vm_id }} | grep 'hostpci'
-      register: current_gpu_config
+    # 2. Vérifier si la VM existe déjà
+    - name: Vérifier si la VM existe déjà
+      shell: qm list | grep ' {{ vm_id }} '
+      register: vm_exists
       changed_when: false
       failed_when: false
 
-    - name: Supprimer les configurations GPU existantes
-      command: qm set {{ vm_id }} --delete {{ item }}
-      with_items: "{{ current_gpu_config.stdout_lines | map('regex_search', '^(hostpci\\d+)') | select('string') | list }}"
-      when: current_gpu_config.rc == 0 and current_gpu_config.stdout != ""
+    # 3. Création de la VM
+    - name: Créer la VM de machine learning
+      block:
+        - name: Créer la VM de base
+          command: >
+            qm create {{ vm_id }} 
+            --name {{ vm_name }}
+            --memory {{ vm_memory }}
+            --cores {{ vm_cores }}
+            --net0 virtio,bridge={{ bridge_interface }}
+            --bios ovmf
+            --machine q35
+            --cpu host
+            --ostype l26
+            --agent 1
+          when: vm_exists.rc != 0
 
-    - name: Configurer le premier GPU pour machine learning (avec x-vga=on)
-      command: qm set {{ vm_id }} --hostpci0 {{ gpu_addresses.stdout_lines[ml_gpu_indices[0]] }},pcie=1,x-vga=on
-      when: gpu_addresses.stdout_lines | length > 0 and ml_gpu_indices | length > 0
-      register: gpu_added
+        - name: Ajouter le disque EFI
+          command: qm set {{ vm_id }} --efidisk0 vm-storage:1
+          when: vm_exists.rc != 0
 
-    # Ajouter les GPU additionnels sans x-vga=on
-    - name: Ajouter des GPU additionnels pour machine learning
-      command: qm set {{ vm_id }} --hostpci{{ idx + 1 }} {{ gpu_addresses.stdout_lines[gpu_idx] }},pcie=1
-      loop: "{{ ml_gpu_indices[1:] }}"
-      loop_control:
-        index_var: idx
-        loop_var: gpu_idx
-      when: ml_gpu_indices | length > 1 and gpu_addresses.stdout_lines | length > gpu_idx
-      register: additional_gpus_added
+        - name: Ajouter le disque principal
+          command: qm set {{ vm_id }} --sata0 vm-storage:{{ vm_disk_size }},ssd=1
+          when: vm_exists.rc != 0
 
-    - name: Message de statut sur le GPU
+        - name: Configurer les paramètres CPU avancés
+          command: qm set {{ vm_id }} --args "-cpu 'host,+kvm_pv_unhalt,+kvm_pv_eoi,hv_vendor_id=NV43FIX,kvm=off'"
+          when: vm_exists.rc != 0
+
+        - name: Ajouter l'ISO d'installation Ubuntu 22.04
+          command: qm set {{ vm_id }} --ide2 {{ vm_iso_image }},media=cdrom
+          when: vm_exists.rc != 0
+          failed_when: false
+          register: iso_added
+
+        - name: Message si ISO introuvable
+          debug:
+            msg: "ATTENTION: L'image ISO '{{ vm_iso_image }}' n'a pas été trouvée. Veuillez télécharger ou spécifier une autre image."
+          when: iso_added.rc != 0
+
+    # 4. Configuration du passthrough GPU
+    - name: Configurer le passthrough GPU pour la VM machine learning
+      block:
+        - name: Arrêter la VM si elle est en cours d'exécution
+          command: qm stop {{ vm_id }}
+          when: vm_exists.rc == 0
+          register: stop_result
+          failed_when: stop_result.rc != 0 and "does not exist" not in stop_result.stderr
+
+        - name: Récupérer les informations sur les cartes GPU
+          shell: lspci -nn | grep -i nvidia | grep -i vga | awk '{print $1}'
+          register: gpu_addresses
+          changed_when: false
+
+        - name: Vérifier la configuration GPU actuelle
+          shell: qm config {{ vm_id }} | grep 'hostpci'
+          register: current_gpu_config
+          changed_when: false
+          failed_when: false
+
+        - name: Supprimer les configurations GPU existantes
+          command: qm set {{ vm_id }} --delete {{ item }}
+          with_items: "{{ current_gpu_config.stdout_lines | map('regex_search', '^(hostpci\\d+)') | select('string') | list }}"
+          when: current_gpu_config.rc == 0 and current_gpu_config.stdout != ""
+
+        - name: Configurer le premier GPU pour machine learning (avec x-vga=on)
+          command: qm set {{ vm_id }} --hostpci0 {{ gpu_addresses.stdout_lines[ml_gpu_indices[0]] }},pcie=1,x-vga=on
+          when: gpu_addresses.stdout_lines | length > 0 and ml_gpu_indices | length > 0
+          register: gpu_added
+
+        # Ajouter les GPU additionnels sans x-vga=on
+        - name: Ajouter des GPU additionnels pour machine learning
+          command: qm set {{ vm_id }} --hostpci{{ idx + 1 }} {{ gpu_addresses.stdout_lines[gpu_idx] }},pcie=1
+          loop: "{{ ml_gpu_indices[1:] }}"
+          loop_control:
+            index_var: idx
+            loop_var: gpu_idx
+          when: ml_gpu_indices | length > 1 and gpu_addresses.stdout_lines | length > gpu_idx
+          register: additional_gpus_added
+
+        - name: Message de statut sur le GPU
+          debug:
+            msg: "GPU(s) configuré(s) pour la VM machine learning: {{ gpu_added.changed or additional_gpus_added.changed | default(false) }}"
+
+    # 5. Démarrage de la VM si spécifié
+    - name: Démarrer la VM si demandé
+      command: qm start {{ vm_id }}
+      when: start_vm_after_creation | default(false) | bool and vm_exists.rc != 0
+
+    # 6. Résumé de la configuration
+    - name: Afficher le résumé de la configuration de la VM machine learning
       debug:
-        msg: "GPU(s) configuré(s) pour la VM machine learning: {{ gpu_added.changed or additional_gpus_added.changed | default(false) }}"
-
-# 4. Démarrage de la VM si spécifié
-- name: Démarrer la VM si demandé
-  command: qm start {{ vm_id }}
-  when: start_vm_after_creation | default(false) | bool and vm_exists.rc != 0
-
-# 5. Résumé de la configuration
-- name: Afficher le résumé de la configuration de la VM machine learning
-  debug:
-    msg:
-      - "VM machine learning créée avec l'ID {{ vm_id }}"
-      - "Mémoire: {{ vm_memory }} Mo"
-      - "CPU: {{ vm_cores }} cœurs"
-      - "Disque: {{ vm_disk_size }}"
-      - "GPU(s) configuré(s): {{ ml_gpu_indices | length }} ({{ ml_gpu_indices | join(', ') }})"
-      - "Démarrage automatique: {{ 'Activé' if start_vm_after_creation | default(false) | bool else 'Désactivé' }}"
-      - "Important: Installez le système d'exploitation manuellement via la console Proxmox."
-  when: vm_exists.rc != 0
+        msg:
+          - "VM machine learning créée avec l'ID {{ vm_id }}"
+          - "Mémoire: {{ vm_memory }} Mo"
+          - "CPU: {{ vm_cores }} cœurs"
+          - "Disque: {{ vm_disk_size }}"
+          - "GPU(s) configuré(s): {{ ml_gpu_indices | length }} ({{ ml_gpu_indices | join(', ') }})"
+          - "Démarrage automatique: {{ 'Activé' if start_vm_after_creation | default(false) | bool else 'Désactivé' }}"
+          - "Important: Installez le système d'exploitation manuellement via la console Proxmox."
+      when: vm_exists.rc != 0
