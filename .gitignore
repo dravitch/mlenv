@@ -16,6 +16,10 @@ desktop.ini
 *.code-workspace
 *.sublime-*
 
+# Dossiers spécifiques à ma documentation
+./doc/next-steps-for-automation.md
+./simplified/doc/*
+
 # Fichiers Python
 __pycache__/
 *.py[cod]
