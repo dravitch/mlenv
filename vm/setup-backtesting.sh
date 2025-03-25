@@ -128,7 +128,7 @@ log "Installation des librairies Python pour le backtesting..."
 su - "$USER_NAME" -c "
 source ~/venv/bin/activate &&
 pip install --upgrade pip &&
-pip install numpy pandas scipy matplotlib seaborn scikit-learn statsmodels pytables jupyterlab ipykernel ipywidgets &&
+pip install numpy pandas scipy matplotlib seaborn scikit-learn statsmodels jupyterlab ipykernel ipywidgets &&
 pip install pyfolio backtrader vectorbt yfinance alpha_vantage ta ccxt &&
 pip install dash plotly &&
 pip install psycopg2-binary SQLAlchemy
@@ -148,12 +148,27 @@ if [[ "$install_dl" =~ ^[Yy]$ ]]; then
     success "TensorFlow et PyTorch installés."
 fi
 
-# Configuration de Jupyter
-log "Configuration de Jupyter..."
-su - "$USER_NAME" -c "
-source ~/venv/bin/activate &&
-jupyter notebook --generate-config
-"
+# Vérification des privilèges root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Ce script doit être exécuté en tant que root" >&2
+    exit 1
+fi
+
+# Vérifier que l'environnement virtuel existe
+if [ ! -d "/home/backtester/venv" ]; then
+    log "L'environnement virtuel de backtester n'existe pas. Création..."
+    su - backtester -c "python3 -m venv ~/venv"
+fi
+
+# Installer ou mettre à jour Jupyter si nécessaire
+log "Installation/mise à jour de Jupyter dans l'environnement virtuel..."
+su - "$USER_NAME" -c "source ~/venv/bin/activate && pip install --upgrade jupyterlab jupyter_core jupyter_client notebook ipykernel ipywidgets"
+
+# Générer une configuration Jupyter si elle n'existe pas
+if [ ! -f "/home/backtester/.jupyter/jupyter_notebook_config.py" ]; then
+    log "Génération de la configuration Jupyter pour l'utilisateur backtester..."
+    su - "$USER_NAME" -c "source ~/venv/bin/activate && jupyter notebook --generate-config"
+fi
 
 # Génération d'un mot de passe Jupyter sécurisé
 log "Génération d'un mot de passe Jupyter sécurisé..."

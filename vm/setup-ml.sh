@@ -132,7 +132,7 @@ log "Installation des librairies Python communes..."
 su - "$USER_NAME" -c "
 source ~/venv/bin/activate &&
 pip install --upgrade pip &&
-pip install numpy pandas scipy matplotlib seaborn scikit-learn statsmodels pytables jupyterlab ipykernel ipywidgets &&
+pip install numpy pandas scipy matplotlib seaborn scikit-learn statsmodels jupyterlab ipykernel ipywidgets &&
 pip install pyfolio yfinance alpha_vantage ta ccxt &&
 pip install dash plotly &&
 pip install psycopg2-binary SQLAlchemy

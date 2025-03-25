@@ -19,6 +19,8 @@ desktop.ini
 # Dossiers spécifiques à ma documentation
 ./doc/next-steps-for-automation.md
 ./simplified/doc/*
+./host/debian/*
+./host/hiveos/*
 
 # Fichiers Python
 __pycache__/

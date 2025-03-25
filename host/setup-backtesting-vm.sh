@@ -1,6 +1,7 @@
 #!/bin/bash
 # Script de création et configuration de la VM de backtesting
-# À exécuter après la configuration de Proxmox et du passthrough GPU
+# À exécuter sur l'hôte Proxmox
+# Partie du projet PredatorX - https://github.com/dravitch/mlenv
 
 set -e  # Arrêter le script en cas d'erreur
 
@@ -29,26 +30,19 @@ error() {
     exit 1
 }
 
-# Vérification des privilèges root
-if [ "$(id -u)" -ne 0 ]; then
-    error "Ce script doit être exécuté en tant que root"
-fi
-
-# Vérification que Proxmox VE est installé
+# Vérification que le script est exécuté sur Proxmox
 if ! command -v qm &> /dev/null; then
-    error "Proxmox VE ne semble pas être installé. Ce script utilise les commandes Proxmox (qm)."
+    error "Ce script doit être exécuté sur l'hôte Proxmox (commande qm non trouvée)"
 fi
 
 # Paramètres de la VM (modifiables)
 VM_ID=${1:-100}
-VM_NAME="BacktestingGPU"
+VM_NAME="BacktestingVM"
 VM_MEMORY=8192
-VM_CORES=2
-VM_DISK_SIZE=40
-BRIDGE_INTERFACE="vmbr0"
-ISO_STORE="local"
-ISO_FILE="ubuntu-22.04.4-live-server-amd64.iso"
+VM_CORES=2  # MAX 2 vcpus allowed per node
 STORAGE="vm-storage"
+BRIDGE="vmbr0"
+VM_DISK_SIZE=60  # En GB
 
 log "Configuration de la VM de backtesting ($VM_NAME)..."
 
@@ -65,37 +59,21 @@ if qm status $VM_ID &>/dev/null; then
     fi
 fi
 
-# Vérifier si l'ISO existe
-ISO_PATH="$ISO_STORE:iso/$ISO_FILE"
-if ! pvesm list $ISO_STORE | grep -q "$ISO_FILE"; then
-    warning "L'ISO $ISO_FILE n'existe pas dans le stockage $ISO_STORE."
-    log "Liste des ISO disponibles:"
-    pvesm list $ISO_STORE | grep "iso" || true
-
-    read -p "Voulez-vous continuer sans ISO ou spécifier un autre chemin? [C]ontinuer/[S]pécifier/[A]nnuler: " iso_choice
-    case $iso_choice in
-        [Ss]*)
-            read -p "Entrez le chemin complet de l'ISO (ex: local:iso/debian-12.4.0-amd64-netinst.iso): " ISO_PATH
-            ;;
-        [Cc]*)
-            ISO_PATH=""
-            warning "Aucune ISO spécifiée. Vous devrez ajouter le média d'installation manuellement."
-            ;;
-        *)
-            error "Configuration annulée par l'utilisateur."
-            ;;
-    esac
-fi
-
-# Création de la VM
+# Création de la VM de base
 log "Création de la VM $VM_NAME avec ID $VM_ID..."
-qm create $VM_ID --name $VM_NAME --memory $VM_MEMORY --cores $VM_CORES \
-    --net0 virtio,bridge=$BRIDGE_INTERFACE \
-    --bios ovmf \
-    --machine q35 \
-    --cpu host \
-    --ostype l26 \
-    --agent 1
+qm create $VM_ID --name "$VM_NAME" --memory $VM_MEMORY --cores $VM_CORES \
+  --scsihw virtio-scsi-pci \
+  --net0 virtio,bridge=$BRIDGE \
+  --bios ovmf \
+  --machine q35 \
+  --cpu host \
+  --ostype l26 \
+  --agent 1 \
+  --onboot 1
+
+# Configuration des options CPU avancées pour NVIDIA
+log "Configuration des paramètres CPU avancés pour le passthrough GPU..."
+qm set $VM_ID --args "-cpu 'host,+kvm_pv_unhalt,+kvm_pv_eoi,hv_vendor_id=NV43FIX,kvm=off'"
 
 # Ajout du disque EFI
 log "Ajout du disque EFI..."
@@ -105,23 +83,33 @@ qm set $VM_ID --efidisk0 $STORAGE:1
 log "Ajout du disque principal..."
 qm set $VM_ID --sata0 $STORAGE:$VM_DISK_SIZE,ssd=1
 
-# Configuration des paramètres CPU avancés pour le passthrough NVIDIA
-log "Configuration des paramètres CPU avancés..."
-qm set $VM_ID --args "-cpu 'host,+kvm_pv_unhalt,+kvm_pv_eoi,hv_vendor_id=NV43FIX,kvm=off'"
+# Cherche un ISO disponible (d'abord Ubuntu, puis Debian)
+ISO_PATH=""
+if pvesm list local | grep -q "ubuntu-22.04"; then
+    ISO_PATH="local:iso/ubuntu-22.04.4-live-server-amd64.iso"
+elif pvesm list local | grep -q "debian-12"; then
+    ISO_PATH="local:iso/debian-12.5.0-amd64-netinst.iso"
+else
+    # Cherche n'importe quel ISO
+    ISO_NAME=$(pvesm list local | grep "iso" | head -n 1 | awk '{print $1}')
+    if [ -n "$ISO_NAME" ]; then
+        ISO_PATH="local:$ISO_NAME"
+    fi
+fi
 
-# Ajout de l'ISO si spécifiée
+# Ajout de l'ISO si trouvée
 if [ -n "$ISO_PATH" ]; then
-    log "Ajout de l'ISO d'installation..."
+    log "Ajout de l'ISO: $ISO_PATH"
     qm set $VM_ID --ide2 $ISO_PATH,media=cdrom
 
     # Configuration du démarrage sur l'ISO
     qm set $VM_ID --boot "order=ide2;sata0"
 else
-    # Configuration du démarrage sur le disque
+    warning "Aucun ISO trouvé. Veuillez ajouter un média d'installation manuellement."
     qm set $VM_ID --boot "order=sata0"
 fi
 
-success "VM $VM_NAME créée avec succès!"
+success "VM $VM_NAME créée avec succès (ID: $VM_ID)"
 
 # Détection des GPUs NVIDIA
 log "Détection des GPUs NVIDIA pour le passthrough..."
@@ -187,7 +175,7 @@ fi
 
 log "Étapes suivantes:"
 log "1. Installez Ubuntu Server sur la VM via la console Proxmox"
-log "2. Après l'installation, exécutez le script setup-backtesting.sh dans la VM"
+log "2. Après l'installation, exécutez le script vm/setup-backtesting.sh dans la VM"
 log "3. Configurez l'environnement de backtesting selon vos besoins"
 
 success "Configuration de la VM de backtesting terminée!"

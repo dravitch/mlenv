@@ -1,0 +1,14 @@
+# À exécuter après l'installation du système d'exploitation
+sudo mkfs.ext4 /dev/sdb
+sudo mkdir -p /data
+sudo mount /dev/sdb /data
+echo "/dev/sdb  /data  ext4  defaults  0  2" | sudo tee -a /etc/fstab
+
+# Créer la structure de répertoires pour backtester
+sudo mkdir -p /data/backtesting/{data,results,models}
+sudo chown -R backtester:backtester /data/backtesting
+
+# Créer des liens symboliques
+sudo -u backtester ln -s /data/backtesting/data /home/backtester/projects/data
+sudo -u backtester ln -s /data/backtesting/results /home/backtester/projects/results
+sudo -u backtester ln -s /data/backtesting/models /home/backtester/projects/models
