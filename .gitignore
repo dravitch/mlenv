@@ -17,8 +17,8 @@ desktop.ini
 *.sublime-*
 
 # Dossiers spécifiques à ma documentation
-./doc/next-steps-for-automation.md
-./simplified/doc/*
+./docs/next-steps-for-automation.md
+./simplified/docs/*
 ./host/debian/*
 ./host/hiveos/*
 

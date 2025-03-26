@@ -3,6 +3,9 @@
 # Analyse la configuration matérielle, les pilotes, les services et l'état général
 # Usage: sudo bash health-check.sh [--detailed]
 
+sudo apt-get update
+sudo apt-get install bc
+
 set -e
 
 ###########################################
@@ -208,7 +211,7 @@ check_disks() {
 
         # Vérifier les répertoires CUDA qui pourraient être nettoyés
         if [ -d "/usr/local/cuda/doc" ]; then
-            doc_size=$(du -sh /usr/local/cuda/doc 2>/dev/null | awk '{print $1}')
+            doc_size=$(du -sh /usr/local/cuda/docs 2>/dev/null | awk '{print $1}')
             warning "La documentation CUDA occupe ${doc_size} et pourrait être supprimée"
         fi
 
@@ -1014,7 +1017,7 @@ if [ "$ROOT_USAGE" -gt 70 ]; then
 
         # Nettoyer CUDA si présent
         if [ -d "/usr/local/cuda/doc" ]; then
-            rm -rf /usr/local/cuda/doc
+            rm -rf /usr/local/cuda/docs
         fi
         if [ -d "/usr/local/cuda/samples" ]; then
             rm -rf /usr/local/cuda/samples

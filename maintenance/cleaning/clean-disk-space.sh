@@ -55,8 +55,8 @@ if [ -d "/usr/local/cuda" ]; then
 
     # Supprimer la documentation (économiser ~1GB)
     if [ -d "/usr/local/cuda/doc" ]; then
-        du -sh /usr/local/cuda/doc
-        rm -rf /usr/local/cuda/doc
+        du -sh /usr/local/cuda/docs
+        rm -rf /usr/local/cuda/docs
         success "Documentation CUDA supprimée"
     fi
 

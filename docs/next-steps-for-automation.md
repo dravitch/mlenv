@@ -64,7 +64,7 @@ Pour un script d'installation complet, il faudrait:
 2. **Structure complète**:
    ```bash
    # Créer tous les répertoires
-   mkdir -p {proxmox/{configuration,scripts},storage,ansible/{inventory/group_vars,playbooks,roles,templates},scripts/{recovery,maintenance},config/{jupyter,systemd,python},doc}
+   mkdir -p {proxmox/{configuration,scripts},storage,ansible/{inventory/group_vars,playbooks,roles,templates},scripts/{recovery,maintenance},config/{jupyter,systemd,python},docs}
    ```
 
 3. **Génération de tous les fichiers essentiels**:

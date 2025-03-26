@@ -38,7 +38,7 @@ $directories = @(
     "config/jupyter",
     "config/systemd",
     "config/python",
-    "doc"
+    "docs"
 )
 
 foreach ($dir in $directories) {
@@ -447,15 +447,15 @@ Set-Content -Path "ansible/roles/jupyter/templates/jupyter.service.j2" -Value $j
 
 # Création de la documentation
 Log-Message "Création des fichiers de documentation..."
-if (Test-Path -Path "../doc/installation.md") {
-    Copy-Item -Path "../doc/installation.md" -Destination "doc/"
+if (Test-Path -Path "../docs/installation.md") {
+    Copy-Item -Path "../docs/installation.md" -Destination "docs/"
 }
 
 # Pour les autres fichiers de documentation
 $docFiles = @("usage.md", "maintenance.md", "troubleshooting.md")
 foreach ($doc in $docFiles) {
-    if (-not (Test-Path -Path "doc/$doc")) {
-        New-Item -Path "doc/$doc" -ItemType File -Force | Out-Null
+    if (-not (Test-Path -Path "docs/$doc")) {
+        New-Item -Path "docs/$doc" -ItemType File -Force | Out-Null
     }
 }
 

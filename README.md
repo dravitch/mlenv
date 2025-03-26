@@ -242,7 +242,7 @@ ansible-playbook playbooks/site.yml
 
 ## Dépannage
 
-Consultez le document [doc/proxmox-recovery-plan.md](doc/proxmox-recovery-plan.md) pour des instructions détaillées sur la récupération du système en cas de problème.
+Consultez le document [doc/proxmox-recovery-plan.md](docs/proxmox-recovery-plan.md) pour des instructions détaillées sur la récupération du système en cas de problème.
 
 ### Problèmes courants
 

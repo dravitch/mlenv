@@ -37,7 +37,7 @@ mkdir -p scripts/recovery
 mkdir -p config/jupyter
 mkdir -p config/systemd
 mkdir -p config/python
-mkdir -p doc
+mkdir -p docs
 
 # Copie des fichiers existants s'ils existent
 if [ -f "../proxmox/post-install.sh" ]; then
@@ -421,7 +421,7 @@ EOF
 
 # Création de la documentation
 log "Création des fichiers de documentation..."
-cp ../doc/installation.md doc/
+cp ../docs/installation.md docs/
 
 # Pour les autres fichiers de documentation
 for doc_file in usage.md maintenance.md troubleshooting.md; do
