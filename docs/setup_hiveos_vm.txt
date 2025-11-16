@@ -1,0 +1,92 @@
+#!/bin/bash
+set -e  # Arrêter le script immédiatement en cas d'erreur
+
+# Configuration initiale
+VMID=199
+VM_NAME="HiveOS"
+USB_DEVICE="2-2.2"  # ID de la clé USB, obtenu avec 'lsusb'
+STORAGE_POOL="vm-storage"
+EFI_DISK="vm-199-disk-1.raw"
+EFI_SIZE="1M"  # Taille du disque EFI
+
+echo ">>> Suppression des anciennes configurations pour la VM (si elles existent)..."
+# Supprimer la VM si elle existe déjà
+if qm status $VMID &> /dev/null; then
+  qm stop $VMID || true
+  qm destroy $VMID || true
+fi
+
+echo ">>> Création de la VM HiveOS..."
+qm create $VMID --name $VM_NAME --memory 16384 --cores 2 \
+  --net0 e1000=BC:24:11:D1:4F:93,bridge=vmbr0 \
+  --bios ovmf \
+  --machine q35 \
+  --cpu host \
+  --ostype l26 \
+  --agent 1
+
+echo ">>> Création explicite du disque EFI..."
+pvesm alloc $STORAGE_POOL $VMID $EFI_DISK $EFI_SIZE
+
+echo ">>> Attachement du disque EFI à la VM..."
+qm set $VMID --efidisk0 $STORAGE_POOL:$VMID/$EFI_DISK
+
+echo ">>> Désactivation du ballooning de la mémoire..."
+qm set $VMID --balloon 0
+
+echo ">>> Ajout de la clé USB comme périphérique principal..."
+qm set $VMID --usb0 host=$USB_DEVICE
+
+echo ">>> Détection des GPUs disponibles..."
+GPU_DEVICES=($(lspci | grep -i vga | awk '{print $1}'))
+
+echo ">>> Ajout de tous les GPUs détectés à la VM..."
+GPU_SLOT=0  # Variable pour les slots PCI
+for GPU in "${GPU_DEVICES[@]}"; do
+  echo ">>> Ajout du GPU $GPU au slot hostpci${GPU_SLOT}..."
+  qm set $VMID --hostpci${GPU_SLOT} 0000:$GPU,pcie=1,rombar=0
+  ((GPU_SLOT++))  # Incrémente le slot PCI pour le prochain GPU
+done
+
+echo ">>> Ajout du socket série..."
+qm set $VMID --serial0 socket
+
+echo ">>> Configuration de l'ordre de démarrage sur l'USB..."
+qm set $VMID --boot order=usb0
+
+echo ">>> Vérification de la configuration de la VM..."
+qm config $VMID
+
+echo ">>> Démarrage de la VM HiveOS..."
+qm start $VMID
+
+echo ">>> La VM HiveOS a été configurée avec succès avec tous les GPUs détectés, la clé USB comme périphérique de démarrage, le ballooning désactivé, et un socket série ajouté !"
+
+
+root@pve:~# qm config 199
+agent: 1
+balloon: 0
+bios: ovmf
+boot: order=usb0
+cores: 2
+cpu: host
+efidisk0: vm-storage:199/vm-199-disk-1.raw,size=1M
+hostpci0: 0000:01:00,pcie=1
+hostpci1: 0000:02:00,pcie=1
+hostpci2: 0000:03:00,pcie=1
+hostpci3: 0000:04:00,pcie=1
+hostpci4: 0000:06:00,pcie=1
+hostpci5: 0000:07:00,pcie=1
+hostpci6: 0000:08:00,pcie=1
+hostpci7: 0000:09:00,pcie=1
+machine: q35
+memory: 16384
+meta: creation-qemu=9.2.0,ctime=1742264573
+name: HiveOS
+net0: e1000=BC:24:11:D1:4F:93,bridge=vmbr0
+ostype: l26
+scsihw: virtio-scsi-pci
+serial0: socket
+smbios1: uuid=e282e9f3-c41f-49aa-a2bb-a43ce201645c
+usb0: host=2-2.2
+vmgenid: 8d188384-0b85-471f-a34e-e0376ace194f
